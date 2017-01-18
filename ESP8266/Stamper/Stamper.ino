@@ -1,5 +1,6 @@
 #include <ESP8266WebServer.h>
 #include <ESP8266mDNS.h>
+#include <WiFiUDP.h>
 
 const char* ssid = "SHELLSOFT";
 const char* password = "buckfutter";
@@ -11,7 +12,19 @@ const int outputPin = 2; // GPIO2
 const bool isActiveLow = true;
 bool isOn = false;
 
-ESP8266WebServer server(80); //creating the server at port 80
+const unsigned int webserverPort = 80;
+ESP8266WebServer server(webserverPort);
+
+///
+/// UDP Server Info
+///
+
+WiFiUDP Udp;
+byte packetBuffer[512]; //buffer to hold incoming and outgoing packets
+
+const char* friendlyName = "Stamper";           // uPNP Friendly Name
+const char* serialNumber = "221517K0101768";                  // anything will do
+const char* uuid = "348cc43d-d8d8-4237-b266-ee9d80ed5413";    // anything will do
 
 void setup() {
   Serial.begin(115200);
@@ -24,24 +37,114 @@ void setup() {
   initializeWifi();
 }
 
-void outputOn() {
-  if (!isOn) {
-    pinMode(outputPin, OUTPUT);
-
-    digitalWrite(outputPin, isActiveLow ?  LOW : HIGH);
-    isOn = true;
-  }
+char* getDateString()
+{
+  //Doesn't matter which date & time, will work
+  //Optional: replace with NTP Client implementation
+  return "Wed, 29 Jun 2016 00:13:46 GMT";
 }
 
-void outputOff() {
-  if (isOn) {
-    pinMode(outputPin, INPUT);
-    isOn = false;
-  }
+void responseToSearchUdp(IPAddress& senderIP, unsigned int senderPort) 
+{
+  Serial.println("responseToSearchUdp");
+
+  //This is absolutely neccessary as Udp.write cannot handle IPAddress or numbers correctly like Serial.print
+  IPAddress myIP = WiFi.localIP();
+  char ipChar[20];
+  snprintf(ipChar, 20, "%d.%d.%d.%d", myIP[0], myIP[1], myIP[2], myIP[3]);
+  char portChar[7];
+  snprintf(portChar, 7, ":%d", webserverPort);
+
+  Udp.beginPacket(senderIP, senderPort);
+  Udp.write("HTTP/1.1 200 OK\r\n");
+  Udp.write("CACHE-CONTROL: max-age=86400\r\n");
+  Udp.write("DATE: ");
+  Udp.write(getDateString());
+  Udp.write("\r\n");
+  Udp.write("EXT:\r\n");
+  Udp.write("LOCATION: ");
+  Udp.write("http://");
+  Udp.write(ipChar);
+  Udp.write(portChar);
+  Udp.write("/setup.xml\r\n");
+  Udp.write("OPT: \"http://schemas.upnp.org/upnp/1/0/\"); ns=01\r\n");
+  Udp.write("01-NLS: ");
+  Udp.write(uuid);
+  Udp.write("\r\n");
+  Udp.write("SERVER: Unspecified, UPnP/1.0, Unspecified\r\n");
+  Udp.write("X-User-Agent: redsonic\r\n");
+  Udp.write("ST: urn:Belkin:device:**\r\n");
+  Udp.write("USN: uuid:Socket-1_0-");
+  Udp.write(serialNumber);
+  Udp.write("::urn:Belkin:device:**\r\n");
+  Udp.write("\r\n");
+  Udp.endPacket();
 }
 
-void outputToggle() {
-  isOn ? outputOff() : outputOn();
+void UdpMulticastServerLoop()
+{
+  int numBytes = Udp.parsePacket();
+  if (numBytes <= 0)
+    return;
+
+  IPAddress senderIP = Udp.remoteIP();
+  unsigned int senderPort = Udp.remotePort();
+  
+  // read the packet into the buffer
+  Udp.read(packetBuffer, numBytes); 
+
+  // print out the received packet
+  //Serial.write(packetBuffer, numBytes);
+
+  // check if this is a M-SEARCH for WeMo device
+  String request = String((char *)packetBuffer);
+  int mSearchIndex = request.indexOf("M-SEARCH");
+  int mBelkinIndex = request.indexOf("urn:Belkin:device:");   //optional
+  if (mSearchIndex < 0 || mBelkinIndex < 0)
+    return;
+
+  // send a reply, to the IP address and port that sent us the packet we received
+  responseToSearchUdp(senderIP, senderPort);
+}
+
+void handleSetupXml()
+{
+  Serial.println("handleSetupXml");
+    
+  String body = "<?xml version=\"1.0\"?>\r\n";
+  body += "<root>\r\n";
+  body += "  <device>\r\n";
+  body += "    <deviceType>urn:OriginallyUS:device:controllee:1</deviceType>\r\n";
+  body += "    <friendlyName>";
+  body += friendlyName;
+  body += "</friendlyName>\r\n";
+  body += "    <manufacturer>Belkin International Inc.</manufacturer>\r\n";
+  body += "    <modelName>Emulated Socket</modelName>\r\n";
+  body += "    <modelNumber>3.1415</modelNumber>\r\n";
+  body += "    <UDN>uuid:Socket-1_0-";
+  body += serialNumber;
+  body += "</UDN>\r\n";
+  body += "  </device>\r\n";
+  body += "</root>";
+
+  String header = "HTTP/1.1 200 OK\r\n";
+  header += "Content-Type: text/xml\r\n";
+  header += "Content-Length: ";
+  header += body.length();
+  header += "\r\n";
+  header += "Date: ";
+  header += getDateString();
+  header += "\r\n";
+  header += "X-User-Agent: redsonic\r\n";
+  header += "SERVER: Unspecified, UPnP/1.0, Unspecified\r\n";
+  header += "connection: close\r\n";
+  header += "LAST-MODIFIED: Sat, 01 Jan 2000 00:00:00 GMT\r\n";
+  header += "\r\n";
+  header += body;
+
+  Serial.println(header);
+  
+  server.sendContent(header);
 }
 
 void handleNotFound() {
@@ -112,6 +215,8 @@ void initializeWifi() {
   server.on("/on", handleOn);
   server.on("/off", handleOff);
 
+  server.on("/setup.xml", handleSetupXml);
+
   server.onNotFound(handleNotFound);
 
   server.begin();
@@ -122,6 +227,8 @@ void loop() {
   readInput();
 
   server.handleClient();
+
+  UdpMulticastServerLoop();   //UDP multicast receiver
 }
 
 void readInput() {
@@ -135,3 +242,22 @@ void readInput() {
 }
 
 
+void outputOn() {
+  if (!isOn) {
+    pinMode(outputPin, OUTPUT);
+
+    digitalWrite(outputPin, isActiveLow ?  LOW : HIGH);
+    isOn = true;
+  }
+}
+
+void outputOff() {
+  if (isOn) {
+    pinMode(outputPin, INPUT);
+    isOn = false;
+  }
+}
+
+void outputToggle() {
+  isOn ? outputOff() : outputOn();
+}
