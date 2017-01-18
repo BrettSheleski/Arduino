@@ -1,117 +1,27 @@
 #include <ESP8266WebServer.h>
-//#include <ESP8266WiFi.h>
+#include <ESP8266mDNS.h>
 
 const char* ssid = "SHELLSOFT";
 const char* password = "buckfutter";
 
 const int inputPin = 0; //GPIO0
+int inputValue = LOW;
 
 const int outputPin = 2; // GPIO2
 const bool isActiveLow = true;
 bool isOn = false;
 
-//WiFiServer server(80);
 ESP8266WebServer server(80); //creating the server at port 80
 
 void setup() {
   Serial.begin(115200);
   delay(10);
-  
+
   pinMode(inputPin, INPUT);
 
   isOn ? outputOn() : outputOff();
 
   initializeWifi();
-}
-
-void handleWifiPost(){
-  
-}
-
-void initializeWifi() {
-  
-  // Connect to WiFi network
-  Serial.println();
-  Serial.println();
-  Serial.print("Connecting to ");
-  Serial.println(ssid);
-
-  //WiFi.begin(ssid, password);
-  server.begin
-
-  while (WiFi.status() != WL_CONNECTED) {
-    delay(500);
-    Serial.print(".");
-  }
-  Serial.println("");
-  Serial.println("WiFi connected");
-
-  // Start the server
-  server.begin();
-  Serial.println("Server started");
-
-  // Print the IP address
-  Serial.print("Use this URL to connect: ");
-  Serial.print("http://");
-  Serial.print(WiFi.localIP());
-  Serial.println("/");
-}
-
-void loop() {
-  // Check if a client has connected
-  WiFiClient client = server.available();
-  if (!client) {
-    return;
-  }
-
-  // Wait until the client sends some data
-  Serial.println("new client");
-  while (!client.available()) {
-    delay(1);
-  }
-
-  // Read the first line of the request
-  String request = client.readStringUntil('\r');
-  Serial.println(request);
-  client.flush();
-
-  // Match the request
-
-  int value = LOW;
-  if (request.indexOf("/LED=ON") != -1) {
-    digitalWrite(outputPin, HIGH);
-    value = HIGH;
-  }
-  if (request.indexOf("/LED=OFF") != -1) {
-    digitalWrite(outputPin, LOW);
-    value = LOW;
-  }
-
-  // Set ledPin according to the request
-  //digitalWrite(ledPin, value);
-
-  // Return the response
-  client.println("HTTP/1.1 200 OK");
-  client.println("Content-Type: text/html");
-  client.println(""); // do not forget this one
-  client.println("<!DOCTYPE HTML>");
-  client.println("<html>");
-
-  client.print("Led pin is now: ");
-
-  if (value == HIGH) {
-    client.print("On");
-  } else {
-    client.print("Off");
-  }
-  client.println("<br><br>");
-  client.println("Click <a href=\"/LED=ON\">here</a> turn the LED on pin 2 ON<br>");
-  client.println("Click <a href=\"/LED=OFF\">here</a> turn the LED on pin 2 OFF<br>");
-  client.println("</html>");
-
-  delay(1);
-  Serial.println("Client disonnected");
-  Serial.println("");
 }
 
 void outputOn() {
@@ -133,4 +43,95 @@ void outputOff() {
 void outputToggle() {
   isOn ? outputOff() : outputOn();
 }
+
+void handleNotFound() {
+  String message = "File Not Found\n\n";
+  message += "URI: ";
+  message += server.uri();
+  message += "\nMethod: ";
+  message += (server.method() == HTTP_GET) ? "GET" : "POST";
+  message += "\nArguments: ";
+  message += server.args();
+  message += "\n";
+  for (uint8_t i = 0; i < server.args(); i++) {
+    message += " " + server.argName(i) + ": " + server.arg(i) + "\n";
+  }
+  server.send(404, "text/plain", message);
+}
+
+void handleOn() {
+  outputOn();
+
+  sendStatusMessage();
+}
+
+void handleOff() {
+  outputOff();
+
+  sendStatusMessage();
+}
+
+void handleRoot() {
+  sendStatusMessage();
+}
+
+void sendStatusMessage() {
+  String message;
+  if (isOn) {
+    message = "{'output' : 'on'}";
+  }
+  else {
+    message = "{'output' : 'off'}";
+  }
+
+  server.send(200, "application/json", message);
+}
+
+void initializeWifi() {
+
+  WiFi.begin(ssid, password);
+  Serial.println("");
+
+  // Wait for connection
+  while (WiFi.status() != WL_CONNECTED) {
+    delay(500);
+    Serial.print(".");
+  }
+  Serial.println("");
+  Serial.print("Connected to ");
+  Serial.println(ssid);
+  Serial.print("IP address: ");
+  Serial.println(WiFi.localIP());
+
+
+  if (MDNS.begin("esp8266")) {
+    Serial.println("MDNS responder started");
+  }
+
+  server.on("/", handleRoot);
+  server.on("/on", handleOn);
+  server.on("/off", handleOff);
+
+  server.onNotFound(handleNotFound);
+
+  server.begin();
+  Serial.println("HTTP server started");
+}
+
+void loop() {
+  readInput();
+
+  server.handleClient();
+}
+
+void readInput() {
+  int input = digitalRead(inputPin);
+
+  if (input == HIGH && input != inputValue) {
+    outputToggle();
+  }
+
+  inputValue = input;
+}
+
 
