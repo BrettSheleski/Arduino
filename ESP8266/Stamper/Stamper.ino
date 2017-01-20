@@ -1,12 +1,13 @@
 #include <ESP8266WebServer.h>
 #include <ESP8266mDNS.h>
-#include <WiFiUDP.h>
+#include <WiFiUdp.h>
 
 const char* ssid = "SHELLSOFT";
 const char* password = "buckfutter";
 
 const int inputPin = 0; //GPIO0
-int inputValue = LOW;
+const int inputSignal = LOW;
+int previousInputValue = !inputSignal;
 
 const int outputPin = 2; // GPIO2
 const bool isActiveLow = true;
@@ -14,6 +15,11 @@ bool isOn = false;
 
 const unsigned int webserverPort = 80;
 ESP8266WebServer server(webserverPort);
+
+unsigned long previousMillis = 0; // last time update
+
+// set inerval to 5 minutes
+long interval = 300000; // interval at which to do something (milliseconds)
 
 ///
 /// UDP Server Info
@@ -25,6 +31,8 @@ byte packetBuffer[512]; //buffer to hold incoming and outgoing packets
 const char* friendlyName = "Stamper";           // uPNP Friendly Name
 const char* serialNumber = "221517K0101768";                  // anything will do
 const char* uuid = "348cc43d-d8d8-4237-b266-ee9d80ed5413";    // anything will do
+
+const IPAddress upnpMulticastIPAddress(239, 255, 255, 250);
 
 void setup() {
   Serial.begin(115200);
@@ -42,6 +50,48 @@ char* getDateString()
   //Doesn't matter which date & time, will work
   //Optional: replace with NTP Client implementation
   return "Wed, 29 Jun 2016 00:13:46 GMT";
+}
+
+void upnpAdvertise()
+{
+  Serial.println("UPnP Advertise");
+
+  //This is absolutely neccessary as Udp.write cannot handle IPAddress or numbers correctly like Serial.print
+  IPAddress myIP = WiFi.localIP();
+  char ipChar[20];
+  snprintf(ipChar, 20, "%d.%d.%d.%d", myIP[0], myIP[1], myIP[2], myIP[3]);
+  char portChar[7];
+  snprintf(portChar, 7, ":%d", webserverPort);
+
+/*
+NOTIFY * HTTP/1.1
+HOST: 239.255.255.250:1900
+CACHE-CONTROL: max-age = seconds until advertisement expires
+LOCATION: URL for IPP Printer with 'ipp' scheme
+NT: search target
+NTS: ssdp:alive
+SERVER: OS / version, IPP / 1.1, product / version
+USN: advertisement UUID
+*/
+ 
+
+  Udp.beginPacket(upnpMulticastIPAddress, 1900);
+  Udp.write("NOTIFY * HTTP/1.1\r\n");
+  Udp.write("HOST: 239.255.255.250:1900\r\n");
+  Udp.write("CACHE-CONTROL: max-age=300\r\n");
+  Udp.write("LOCATION: ");
+  Udp.write("http://");
+  Udp.write(ipChar);
+  Udp.write(portChar);
+  Udp.write("/setup.xml\r\n");
+  Udp.write("NT: search target \r\n");
+  Udp.write("NTS:ssdp:alive\r\n");
+  Udp.write("SERVER: Unspecified, UPnP/1.0, Unspecified\r\n");
+  Udp.write("USN: uuid:Socket-1_0-");
+  Udp.write(serialNumber);
+  Udp.write("::urn:Sheleski:device:**\r\n");
+  Udp.write("\r\n");
+  Udp.endPacket();
 }
 
 void responseToSearchUdp(IPAddress& senderIP, unsigned int senderPort) 
@@ -229,16 +279,24 @@ void loop() {
   server.handleClient();
 
   UdpMulticastServerLoop();   //UDP multicast receiver
+
+  unsigned long currentMillis = millis();
+
+  if(currentMillis - previousMillis > interval) {
+     previousMillis = currentMillis;  
+
+     upnpAdvertise();
+  }
 }
 
 void readInput() {
-  int input = digitalRead(inputPin);
+  int currentInputValue = digitalRead(inputPin);
 
-  if (input == HIGH && input != inputValue) {
+  if (currentInputValue == inputSignal && currentInputValue != previousInputValue) {
     outputToggle();
   }
 
-  inputValue = input;
+  previousInputValue = currentInputValue;
 }
 
 
