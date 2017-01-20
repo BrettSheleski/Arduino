@@ -43,6 +43,8 @@ void setup() {
   isOn ? outputOn() : outputOff();
 
   initializeWifi();
+
+  upnpAdvertise();
 }
 
 char* getDateString()
